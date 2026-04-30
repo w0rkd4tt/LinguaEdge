@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root { height: 100%; }
+body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+
+.state-pill {
+  @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border;
+}
+.state-pill.new      { @apply bg-amber-50 text-amber-800 border-amber-200; }
+.state-pill.learning { @apply bg-orange-50 text-orange-800 border-orange-200; }
+.state-pill.reviewing{ @apply bg-blue-50 text-blue-800 border-blue-200; }
+.state-pill.known    { @apply bg-green-50 text-green-800 border-green-200; }
+.state-pill.ignored  { @apply bg-slate-100 text-slate-600 border-slate-200; }
