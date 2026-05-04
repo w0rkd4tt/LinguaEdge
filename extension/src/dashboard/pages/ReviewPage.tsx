@@ -5,7 +5,8 @@ import type { SrsGrade } from '@/common/srs';
 import type { VocabularyItem } from '@/common/types';
 import { uid } from '@/common/uid';
 
-type Mode = 'flashcard' | 'cloze' | 'mixed';
+type Mode = 'flashcard' | 'cloze' | 'reverse' | 'mixed';
+type RenderMode = 'flashcard' | 'cloze' | 'reverse';
 
 export function ReviewPage() {
   const [mode, setMode] = useState<Mode>('mixed');
@@ -15,7 +16,7 @@ export function ReviewPage() {
   const [stats, setStats] = useState({ correct: 0, incorrect: 0 });
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-  const [pickedMode, setPickedMode] = useState<'flashcard' | 'cloze'>('flashcard');
+  const [pickedMode, setPickedMode] = useState<RenderMode>('flashcard');
 
   const startSession = async (m: Mode, limit = 20) => {
     const items = await getDueItems(limit);
@@ -45,7 +46,10 @@ export function ReviewPage() {
   const pickModeForCurrent = (m: Mode, item: VocabularyItem) => {
     if (m === 'mixed') {
       const hasContext = item.contexts.length > 0;
-      setPickedMode(hasContext && Math.random() > 0.5 ? 'cloze' : 'flashcard');
+      const r = Math.random();
+      if (r < 0.34) setPickedMode('reverse');
+      else if (hasContext && r < 0.67) setPickedMode('cloze');
+      else setPickedMode('flashcard');
     } else {
       setPickedMode(m);
     }
@@ -125,6 +129,12 @@ export function ReviewPage() {
       <div className="bg-white rounded-xl border border-slate-200 p-8 min-h-[260px]">
         {pickedMode === 'flashcard' ? (
           <FlashcardView item={current} revealed={revealed} />
+        ) : pickedMode === 'reverse' ? (
+          <ReverseView
+            item={current}
+            revealed={revealed}
+            onRevealRequest={() => setRevealed(true)}
+          />
         ) : (
           <ClozeView item={current} revealed={revealed} />
         )}
@@ -200,8 +210,14 @@ function Welcome({ onStart }: { onStart: (m: Mode, limit?: number) => void }) {
           disabled={!count}
         />
         <ModeCard
+          title="Reverse (Vi → En)"
+          desc="Hiện nghĩa tiếng Việt, gõ lại từ tiếng Anh. Quan trọng cho IELTS / TOEFL writing."
+          onClick={() => onStart('reverse')}
+          disabled={!count}
+        />
+        <ModeCard
           title="Mixed"
-          desc="Trộn cả hai - thay đổi để đỡ nhàm chán."
+          desc="Trộn cả ba - thay đổi để đỡ nhàm chán."
           highlight
           onClick={() => onStart('mixed')}
           disabled={!count}
@@ -300,6 +316,143 @@ function ClozeView({ item, revealed }: { item: VocabularyItem; revealed: boolean
       )}
     </div>
   );
+}
+
+function ReverseView({
+  item, revealed, onRevealRequest,
+}: {
+  item: VocabularyItem;
+  revealed: boolean;
+  onRevealRequest: () => void;
+}) {
+  const [input, setInput] = useState('');
+  const [judged, setJudged] = useState<null | 'exact' | 'close' | 'wrong'>(null);
+
+  // Reset input each time the card changes
+  useEffect(() => {
+    setInput('');
+    setJudged(null);
+  }, [item.id]);
+
+  const handleCheck = () => {
+    if (!input.trim()) return;
+    const normalized = input.trim().toLowerCase();
+    const target = item.word.toLowerCase();
+    if (normalized === target) {
+      setJudged('exact');
+    } else if (
+      normalized === item.lemma.toLowerCase() ||
+      Math.abs(normalized.length - target.length) <= 1 &&
+        levenshtein(normalized, target) <= 1
+    ) {
+      setJudged('close');
+    } else {
+      setJudged('wrong');
+    }
+    onRevealRequest();
+  };
+
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      handleCheck();
+    }
+  };
+
+  const meaning = item.meanings[0]?.translation ?? '';
+
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-slate-400 mb-2">
+        Nghĩa tiếng Việt
+      </div>
+      <div className="text-2xl font-medium text-slate-900 mb-1">{meaning}</div>
+      {item.meanings[0]?.partOfSpeech && (
+        <div className="text-xs text-brand-600 mb-4">
+          ({item.meanings[0].partOfSpeech})
+        </div>
+      )}
+
+      <div className="mt-6 space-y-2">
+        <label className="text-sm text-slate-600 block">Gõ từ tiếng Anh:</label>
+        <input
+          autoFocus
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKey}
+          disabled={revealed}
+          placeholder="..."
+          className={`w-full px-4 py-3 rounded-lg border text-lg font-medium focus:outline-none transition-colors ${
+            judged === 'exact'
+              ? 'border-green-400 bg-green-50 text-green-800'
+              : judged === 'close'
+                ? 'border-amber-400 bg-amber-50 text-amber-800'
+                : judged === 'wrong'
+                  ? 'border-red-400 bg-red-50 text-red-800'
+                  : 'border-slate-200 focus:border-brand-500'
+          }`}
+        />
+        {!revealed && (
+          <button
+            onClick={handleCheck}
+            disabled={!input.trim()}
+            className="w-full py-2 rounded-lg bg-brand-500 text-white text-sm font-medium hover:bg-brand-600 disabled:opacity-50"
+          >
+            Kiểm tra (Enter)
+          </button>
+        )}
+      </div>
+
+      {revealed && (
+        <div className="mt-5 pt-4 border-t border-slate-100 space-y-2">
+          <div>
+            <span className="text-xs text-slate-500 mr-2">Từ đúng:</span>
+            <span className="font-semibold text-slate-900">{item.word}</span>
+            {item.pronunciation?.ipa && (
+              <span className="text-slate-400 ml-2">{item.pronunciation.ipa}</span>
+            )}
+          </div>
+          {item.contexts[0]?.sentence && (
+            <div className="text-sm text-slate-600 italic">
+              "{item.contexts[0].sentence}"
+            </div>
+          )}
+          {judged === 'exact' && (
+            <div className="text-sm text-green-700">✓ Chính xác. Chọn "Tốt" hoặc "Dễ".</div>
+          )}
+          {judged === 'close' && (
+            <div className="text-sm text-amber-700">
+              ≈ Gần đúng (sai chính tả nhỏ). Chọn "Tốt" hoặc "Khó".
+            </div>
+          )}
+          {judged === 'wrong' && (
+            <div className="text-sm text-red-700">✗ Chưa đúng. Chọn "Quên".</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = new Array(b.length + 1);
+  for (let i = 0; i <= b.length; i++) prev[i] = i;
+  for (let i = 1; i <= a.length; i++) {
+    let cur = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = cur;
+      cur = a[i - 1] === b[j - 1]
+        ? prev[j - 1]
+        : 1 + Math.min(prev[j - 1], prev[j], cur);
+      prev[j - 1] = tmp;
+    }
+    prev[b.length] = cur;
+  }
+  return prev[b.length];
 }
 
 function GradeButton(props: {

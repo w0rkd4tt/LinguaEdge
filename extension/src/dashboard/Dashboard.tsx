@@ -3,6 +3,7 @@ import { VocabPage } from './pages/VocabPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { DecksPage } from './pages/DecksPage';
 import { StatsPage } from './pages/StatsPage';
+import { DrillStatsPage } from './pages/DrillStatsPage';
 import { SettingsPage } from './pages/SettingsPage';
 
 const tabs = [
@@ -10,6 +11,7 @@ const tabs = [
   { id: 'review', label: 'Ôn tập' },
   { id: 'decks', label: 'Decks' },
   { id: 'stats', label: 'Thống kê' },
+  { id: 'drill', label: 'Drill' },
   { id: 'settings', label: 'Cài đặt' },
 ] as const;
 
@@ -71,6 +73,7 @@ export function Dashboard() {
         {tab === 'review' && <ReviewPage />}
         {tab === 'decks' && <DecksPage />}
         {tab === 'stats' && <StatsPage />}
+        {tab === 'drill' && <DrillStatsPage />}
         {tab === 'settings' && <SettingsPage />}
       </main>
     </div>

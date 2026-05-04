@@ -61,6 +61,20 @@ export interface ReviewSession {
   incorrect: number;
 }
 
+export interface DrillEvent {
+  id: string;
+  vocabularyId: string;
+  word: string;
+  lemma: string;
+  correct: boolean;
+  // 'answered' = user picked an option; 'skipped' = closed without answering.
+  outcome: 'answered' | 'skipped';
+  // State the word was in BEFORE this drill — useful to see if drill is moving
+  // words from new → learning → reviewing.
+  stateBefore: KnowledgeState;
+  at: number;
+}
+
 export interface TranslationCacheEntry {
   key: string;
   sourceText: string;
@@ -82,6 +96,11 @@ export interface Settings {
   dailyReviewLimit: number;
   autoDeckEnabled: boolean;
   notificationsEnabled: boolean;
+  drillEnabled: boolean;
+  drillIntervalMinutes: number;
+  drillMaxPerHour: number;
+  highlightEnabled: boolean;
+  reencounterEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -93,6 +112,11 @@ export const DEFAULT_SETTINGS: Settings = {
   dailyReviewLimit: 50,
   autoDeckEnabled: true,
   notificationsEnabled: true,
+  drillEnabled: true,
+  drillIntervalMinutes: 10,
+  drillMaxPerHour: 3,
+  highlightEnabled: true,
+  reencounterEnabled: true,
 };
 
 // Messaging contract between content / popup / dashboard <-> service worker
@@ -103,6 +127,11 @@ export type RuntimeMessage =
   | { type: 'UPDATE_WORD_STATE'; id: string; state: KnowledgeState }
   | { type: 'GET_STATS' }
   | { type: 'OPEN_DASHBOARD'; tab?: string }
+  | { type: 'GET_DRILL_CARD' }
+  | { type: 'GRADE_DRILL'; id: string; correct: boolean }
+  | { type: 'SKIP_DRILL'; id: string }
+  | { type: 'GET_HIGHLIGHT_INDEX' }
+  | { type: 'GET_SETTINGS' }
   | { type: 'PING' };
 
 export interface SaveWordPayload {

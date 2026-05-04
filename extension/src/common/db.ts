@@ -1,6 +1,7 @@
 import Dexie, { type Table } from 'dexie';
 import type {
   Deck,
+  DrillEvent,
   ReviewSession,
   Settings,
   TranslationCacheEntry,
@@ -18,6 +19,7 @@ class LinguaEdgeDB extends Dexie {
   decks!: Table<Deck, string>;
   reviewSessions!: Table<ReviewSession, string>;
   translationCache!: Table<TranslationCacheEntry, string>;
+  drillEvents!: Table<DrillEvent, string>;
   settings!: Table<SettingRow, string>;
 
   constructor() {
@@ -29,6 +31,9 @@ class LinguaEdgeDB extends Dexie {
       reviewSessions: 'id, startedAt, endedAt',
       translationCache: 'key, cachedAt',
       settings: 'key',
+    });
+    this.version(2).stores({
+      drillEvents: 'id, vocabularyId, at, correct, outcome',
     });
   }
 }

@@ -182,6 +182,12 @@ function StepBehavior({
           Không có popup tự động — bạn chủ động khi muốn dịch.
         </div>
         <ToggleRow
+          label="Drill khi đọc web"
+          desc="Mỗi 10 phút active trên 1 tab, hiện popup nhỏ ở góc dưới-phải hỏi nghĩa của 1 từ ngẫu nhiên (ưu tiên từ Mới / đang Học) kèm câu ví dụ. Tối đa 3 lần/giờ/tab."
+          checked={settings.drillEnabled}
+          onChange={(v) => onChange('drillEnabled', v)}
+        />
+        <ToggleRow
           label="Tự tạo deck theo trang web"
           desc="Mỗi domain mới sẽ có deck riêng (ví dụ: medium, bbc, mdn-docs)."
           checked={settings.autoDeckEnabled}

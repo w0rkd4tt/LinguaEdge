@@ -3,10 +3,16 @@ import type {
   KnowledgeState,
   Meaning,
   RuntimeMessage,
+  Settings,
   TranslateResponse,
   VocabularyItem,
 } from '@/common/types';
+import { DEFAULT_SETTINGS } from '@/common/types';
 import { extractSentence, looksLikeTranslatable, looksLikeWord } from '@/common/lemma';
+import { DrillController } from './drill-controller';
+import { PageScanner, type IndexedWord, type ScannedMatch } from './page-scanner';
+import { HighlightController } from './highlight-controller';
+import { ReencounterController } from './reencounter-controller';
 
 interface TranslateReply extends TranslateResponse {
   lemma: string;
@@ -18,6 +24,12 @@ interface ContextActionMessage {
   action: 'TRANSLATE' | 'SAVE' | 'TRANSLATE_HOTKEY';
   text?: string;
 }
+
+interface InvalidateMessage {
+  type: 'VOCAB_INVALIDATED';
+}
+
+type InboundMessage = ContextActionMessage | InvalidateMessage;
 
 const HOST_ID = 'linguaedge-host-' + Math.random().toString(36).slice(2, 8);
 
@@ -34,6 +46,11 @@ class LinguaEdgeUI {
     hoverEnabled: false,
     hoverDelayMs: 250,
   };
+  private drill: DrillController | null = null;
+  private scanner: PageScanner | null = null;
+  private highlighter: HighlightController | null = null;
+  private reencounter: ReencounterController | null = null;
+  private quizEl: HTMLDivElement | null = null;
 
   constructor() {
     this.host = document.createElement('div');
@@ -53,15 +70,67 @@ class LinguaEdgeUI {
     document.documentElement.appendChild(this.host);
 
     this.attachEvents();
+    this.drill = new DrillController(this.root, (m) => this.toast(m));
+    this.highlighter = new HighlightController();
+    this.highlighter.attachStyles(document);
+    this.scanner = new PageScanner();
+    this.reencounter = new ReencounterController((match, _host, anchor) =>
+      this.openReencounterQuiz(match, anchor),
+    );
+    this.scanner.subscribe((matches) => {
+      this.highlighter?.accumulate(matches);
+      this.reencounter?.apply(matches);
+    });
     this.loadSettings();
+    this.attachStorageWatch();
+    this.refreshIndex();
+  }
+
+  private async refreshIndex() {
+    if (!this.scanner) return;
+    try {
+      const reply = (await chrome.runtime.sendMessage({
+        type: 'GET_HIGHLIGHT_INDEX',
+      })) as { ok: boolean; items: IndexedWord[] };
+      if (!reply?.ok) return;
+      this.scanner.setIndex(reply.items);
+      this.scanner.start();
+    } catch { /* ignore */ }
   }
 
   private async loadSettings() {
+    let merged: Settings = { ...DEFAULT_SETTINGS };
     try {
       const res = await chrome.storage.local.get('linguaedge_settings_cache');
-      const cached = res.linguaedge_settings_cache as Partial<typeof this.settings> | undefined;
-      if (cached) Object.assign(this.settings, cached);
+      const cached = res.linguaedge_settings_cache as Partial<Settings> | undefined;
+      if (cached) merged = { ...merged, ...cached };
     } catch { /* ignore */ }
+    // Pull from service worker if local cache empty (covers fresh install / page
+    // navigations where the popup hasn't seeded settings yet).
+    if (!('drillEnabled' in (merged as object))) {
+      try {
+        const reply = (await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' })) as {
+          ok: boolean; settings: Settings;
+        };
+        if (reply?.ok) merged = reply.settings;
+      } catch { /* ignore */ }
+    }
+    Object.assign(this.settings, merged);
+    this.drill?.applySettings(merged);
+    this.highlighter?.setEnabled(merged.highlightEnabled !== false);
+    this.reencounter?.setEnabled(merged.reencounterEnabled !== false);
+  }
+
+  private attachStorageWatch() {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes.linguaedge_settings_cache) return;
+      const next = changes.linguaedge_settings_cache.newValue as Settings | undefined;
+      if (!next) return;
+      Object.assign(this.settings, next);
+      this.drill?.applySettings(next);
+      this.highlighter?.setEnabled(next.highlightEnabled !== false);
+      this.reencounter?.setEnabled(next.reencounterEnabled !== false);
+    });
   }
 
   private attachEvents() {
@@ -71,7 +140,11 @@ class LinguaEdgeUI {
     chrome.runtime.onMessage.addListener(this.onRuntimeMessage);
   }
 
-  private onRuntimeMessage = (msg: ContextActionMessage) => {
+  private onRuntimeMessage = (msg: InboundMessage) => {
+    if (msg.type === 'VOCAB_INVALIDATED') {
+      this.refreshIndex();
+      return;
+    }
     if (msg.type !== 'CONTEXT_ACTION') return;
     if (msg.action === 'TRANSLATE_HOTKEY' || msg.action === 'TRANSLATE') {
       const sel = window.getSelection();
@@ -112,11 +185,26 @@ class LinguaEdgeUI {
   };
 
   private onKeyDown = (ev: KeyboardEvent) => {
-    if (!this.cardEl) return;
     if (ev.key === 'Escape') {
-      ev.stopPropagation();
-      this.dismissCard();
-    } else if ((ev.key === 's' || ev.key === 'S') && !this.isFormElement(ev.target)) {
+      if (this.quizEl) {
+        ev.stopPropagation();
+        this.quizEl.remove();
+        this.quizEl = null;
+        return;
+      }
+      if (this.drill?.isActive()) {
+        ev.stopPropagation();
+        this.drill.dismiss();
+        return;
+      }
+      if (this.cardEl) {
+        ev.stopPropagation();
+        this.dismissCard();
+      }
+      return;
+    }
+    if (!this.cardEl) return;
+    if ((ev.key === 's' || ev.key === 'S') && !this.isFormElement(ev.target)) {
       ev.preventDefault();
       ev.stopPropagation();
       this.saveCurrent();
@@ -412,6 +500,171 @@ class LinguaEdgeUI {
     } catch { /* ignore */ }
   }
 
+  // ---- Re-encounter mini quiz ----------------------------------------------
+
+  private async openReencounterQuiz(
+    match: ScannedMatch,
+    anchor: { left: number; top: number },
+  ) {
+    if (this.quizEl) {
+      this.quizEl.remove();
+      this.quizEl = null;
+    }
+
+    const reply = (await chrome.runtime.sendMessage({ type: 'GET_DRILL_CARD' })) as {
+      ok: boolean; card: import('@/common/drill').DrillCard | null;
+    };
+    // GET_DRILL_CARD bốc ngẫu nhiên — re-encounter cần đúng từ trên page. Dùng
+    // distractors của card nếu có, nhưng rebuild prompt từ context trên page.
+    const card = reply?.card;
+
+    const el = document.createElement('div');
+    el.className = 'card drill-card linguaedge-reenc-quiz';
+    el.style.pointerEvents = 'auto';
+    this.root.appendChild(el);
+    this.quizEl = el;
+
+    const correctTranslation = match.item.translation || card?.correct || '';
+    const distractors = card && card.item.lemma === match.lemma
+      ? card.options.filter((o) => o !== correctTranslation).slice(0, 3)
+      : (card?.options.filter((o) => o !== card.correct).slice(0, 3) ?? []);
+    const options = shuffle([correctTranslation, ...distractors]).slice(0, 4);
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'row';
+    const badge = document.createElement('div');
+    badge.className = 'drill-badge';
+    badge.textContent = '💡 Đã gặp từ này trước đây';
+    header.appendChild(badge);
+    const sp = document.createElement('div');
+    sp.className = 'spacer';
+    header.appendChild(sp);
+    const close = document.createElement('button');
+    close.className = 'close-btn';
+    close.textContent = '×';
+    close.title = 'Đóng (Esc)';
+    close.addEventListener('click', () => this.dismissReencounter(match.lemma));
+    header.appendChild(close);
+    el.appendChild(header);
+
+    // Word + IPA + speak
+    const wordRow = document.createElement('div');
+    wordRow.className = 'row drill-word-row';
+    const word = document.createElement('div');
+    word.className = 'word';
+    word.textContent = match.item.word;
+    wordRow.appendChild(word);
+    const speakBtn = document.createElement('button');
+    speakBtn.className = 'btn icon';
+    speakBtn.style.marginLeft = 'auto';
+    speakBtn.textContent = '🔊';
+    speakBtn.title = 'Nghe phát âm';
+    speakBtn.addEventListener('click', () => this.speak(match.item.word));
+    wordRow.appendChild(speakBtn);
+    el.appendChild(wordRow);
+
+    // Show the actual sentence on the page (extracted from surrounding block).
+    const sentence = sentenceFor(match);
+    if (sentence) {
+      const ctx = document.createElement('div');
+      ctx.className = 'context drill-example';
+      ctx.appendChild(highlightedSentence(sentence, match.word));
+      el.appendChild(ctx);
+    }
+
+    const q = document.createElement('div');
+    q.className = 'drill-question';
+    q.textContent = 'Nghĩa của từ này là gì?';
+    el.appendChild(q);
+
+    const grid = document.createElement('div');
+    grid.className = 'drill-options';
+    if (options.length < 2) {
+      // Not enough vocab to make a quiz — just reveal meaning.
+      const reveal = document.createElement('div');
+      reveal.className = 'translation';
+      reveal.textContent = correctTranslation || '(không có nghĩa)';
+      el.appendChild(reveal);
+    } else {
+      for (const opt of options) {
+        const btn = document.createElement('button');
+        btn.className = 'btn drill-option';
+        btn.textContent = opt;
+        btn.addEventListener('click', () =>
+          this.handleReencounterAnswer(match, btn, opt, correctTranslation));
+        grid.appendChild(btn);
+      }
+      el.appendChild(grid);
+    }
+
+    this.positionQuiz(el, anchor);
+  }
+
+  private async handleReencounterAnswer(
+    match: ScannedMatch,
+    btn: HTMLButtonElement,
+    picked: string,
+    correctTranslation: string,
+  ) {
+    if (!this.quizEl) return;
+    const correct = picked === correctTranslation;
+    const opts = this.quizEl.querySelectorAll<HTMLButtonElement>('.drill-option');
+    opts.forEach((b) => {
+      b.disabled = true;
+      const txt = b.textContent ?? '';
+      if (txt === correctTranslation) b.classList.add('drill-option-correct');
+      else if (b === btn && !correct) b.classList.add('drill-option-wrong');
+    });
+    try {
+      await chrome.runtime.sendMessage({
+        type: 'GRADE_DRILL',
+        id: match.item.id,
+        correct,
+      });
+    } catch { /* ignore */ }
+    const fb = document.createElement('div');
+    fb.className = correct ? 'drill-feedback ok' : 'drill-feedback bad';
+    fb.textContent = correct
+      ? '✓ Chính xác — interval ôn được kéo dài.'
+      : '✗ Chưa đúng — sẽ ôn lại sớm hơn.';
+    this.quizEl.appendChild(fb);
+    setTimeout(() => this.dismissReencounter(match.lemma), correct ? 1400 : 2400);
+  }
+
+  private dismissReencounter(lemma: string) {
+    if (this.quizEl) {
+      this.quizEl.remove();
+      this.quizEl = null;
+    }
+    this.reencounter?.markCooldown(lemma);
+  }
+
+  private positionQuiz(el: HTMLElement, anchor: { left: number; top: number }) {
+    el.style.position = 'fixed';
+    el.style.maxWidth = '380px';
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+    // Initial paint to measure
+    el.style.visibility = 'hidden';
+    el.style.left = '0px';
+    el.style.top = '0px';
+    const w = el.offsetWidth || 360;
+    const h = el.offsetHeight || 200;
+    const margin = 12;
+    let left = anchor.left - w / 2;
+    if (left < margin) left = margin;
+    if (left + w > window.innerWidth - margin) left = window.innerWidth - margin - w;
+    let top = anchor.top + 8;
+    if (top + h > window.innerHeight - margin) {
+      top = anchor.top - 8 - h;
+      if (top < margin) top = margin;
+    }
+    el.style.left = `${Math.round(left)}px`;
+    el.style.top = `${Math.round(top)}px`;
+    el.style.visibility = 'visible';
+  }
+
   private positionCard(card: HTMLElement, rect: DOMRect) {
     const margin = 8;
     const vw = window.innerWidth;
@@ -465,6 +718,45 @@ class LinguaEdgeUI {
       this.toastTimer = null;
     }, 1800);
   }
+}
+
+function shuffle<T>(arr: T[]): T[] {
+  const copy = arr.slice();
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function sentenceFor(match: ScannedMatch): string {
+  // Walk up to nearest block parent and extract the sentence containing the
+  // matched range.
+  let node: Node | null = match.range.startContainer;
+  while (node && node.nodeType !== Node.ELEMENT_NODE) node = node.parentNode;
+  const block = (node as Element | null)?.closest(
+    'p, li, blockquote, h1, h2, h3, h4, h5, h6, td, dd, article, section, div',
+  );
+  const fullText = (block?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return extractSentence(fullText, match.word) || match.word;
+}
+
+function highlightedSentence(sentence: string, word: string): DocumentFragment {
+  const frag = document.createDocumentFragment();
+  if (!sentence) return frag;
+  const re = new RegExp(`(\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}s?\\b)`, 'i');
+  const parts = sentence.split(re);
+  for (const part of parts) {
+    if (re.test(part)) {
+      const m = document.createElement('span');
+      m.className = 'drill-highlight';
+      m.textContent = part;
+      frag.appendChild(m);
+    } else {
+      frag.appendChild(document.createTextNode(part));
+    }
+  }
+  return frag;
 }
 
 if (!document.getElementById(HOST_ID)) {

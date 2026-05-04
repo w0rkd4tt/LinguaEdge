@@ -1,12 +1,15 @@
 import { translateText } from '@/common/translate';
 import {
   getByLemma,
+  gradeReview,
   getStats,
   saveWord,
   setState,
 } from '@/common/vocab-service';
 import { lemmatize } from '@/common/lemma';
-import { getSettings } from '@/common/db';
+import { db, getSettings } from '@/common/db';
+import { pickDrillCard } from '@/common/drill';
+import { uid } from '@/common/uid';
 import type { RuntimeMessage, TranslateResponse } from '@/common/types';
 
 const ALARM_REVIEW_REMINDER = 'linguaedge.reviewReminder';
@@ -127,6 +130,7 @@ async function handleMessage(msg: RuntimeMessage): Promise<unknown> {
     }
     case 'SAVE_WORD': {
       const item = await saveWord(msg.payload);
+      broadcastInvalidate();
       return { ok: true, item };
     }
     case 'GET_WORD_BY_LEMMA': {
@@ -135,11 +139,73 @@ async function handleMessage(msg: RuntimeMessage): Promise<unknown> {
     }
     case 'UPDATE_WORD_STATE': {
       await setState(msg.id, msg.state);
+      broadcastInvalidate();
       return { ok: true };
     }
     case 'GET_STATS': {
       const stats = await getStats();
       return { ok: true, stats };
+    }
+    case 'GET_SETTINGS': {
+      const settings = await getSettings();
+      return { ok: true, settings };
+    }
+    case 'GET_DRILL_CARD': {
+      const card = await pickDrillCard();
+      return { ok: true, card };
+    }
+    case 'GRADE_DRILL': {
+      const before = await db.vocabulary.get(msg.id);
+      // SM-2 grade: correct → 4 (Good), wrong → 0 (Forgot).
+      await gradeReview(msg.id, msg.correct ? 4 : 0);
+      if (before) {
+        await db.drillEvents.put({
+          id: uid(),
+          vocabularyId: before.id,
+          word: before.word,
+          lemma: before.lemma,
+          correct: msg.correct,
+          outcome: 'answered',
+          stateBefore: before.state,
+          at: Date.now(),
+        });
+      }
+      broadcastInvalidate();
+      return { ok: true };
+    }
+    case 'GET_HIGHLIGHT_INDEX': {
+      // Lightweight projection — only what content script needs to highlight
+      // and quiz. Keeps the message payload small.
+      const items = await db.vocabulary
+        .where('state')
+        .anyOf('new', 'learning', 'reviewing')
+        .toArray();
+      return {
+        ok: true,
+        items: items.map((v) => ({
+          id: v.id,
+          word: v.word,
+          lemma: v.lemma,
+          state: v.state,
+          translation: v.meanings[0]?.translation ?? '',
+        })),
+      };
+    }
+    case 'SKIP_DRILL': {
+      const item = await db.vocabulary.get(msg.id);
+      if (item) {
+        await db.drillEvents.put({
+          id: uid(),
+          vocabularyId: item.id,
+          word: item.word,
+          lemma: item.lemma,
+          correct: false,
+          outcome: 'skipped',
+          stateBefore: item.state,
+          at: Date.now(),
+        });
+      }
+      return { ok: true };
     }
     case 'OPEN_DASHBOARD':
       openDashboard(msg.tab);
@@ -152,4 +218,20 @@ async function handleMessage(msg: RuntimeMessage): Promise<unknown> {
 function openDashboard(tab?: string): void {
   const url = chrome.runtime.getURL('dashboard.html') + (tab ? `#${tab}` : '');
   chrome.tabs.create({ url });
+}
+
+// Notify all content scripts that the vocabulary index changed so they can
+// refresh page highlights / re-encounter dots without polling.
+let invalidateCoalesce: number | null = null;
+function broadcastInvalidate(): void {
+  if (invalidateCoalesce !== null) return;
+  invalidateCoalesce = setTimeout(() => {
+    invalidateCoalesce = null;
+    chrome.tabs.query({}, (tabs) => {
+      for (const t of tabs) {
+        if (!t.id) continue;
+        chrome.tabs.sendMessage(t.id, { type: 'VOCAB_INVALIDATED' }).catch(() => {});
+      }
+    });
+  }, 250) as unknown as number;
 }

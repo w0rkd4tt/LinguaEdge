@@ -187,12 +187,16 @@ export async function exportAll(): Promise<{
   exportedAt: number;
   vocabulary: VocabularyItem[];
   decks: Deck[];
+  drillEvents?: import('./types').DrillEvent[];
+  reviewSessions?: import('./types').ReviewSession[];
 }> {
-  const [vocabulary, decks] = await Promise.all([
+  const [vocabulary, decks, drillEvents, reviewSessions] = await Promise.all([
     db.vocabulary.toArray(),
     db.decks.toArray(),
+    db.drillEvents.toArray().catch(() => []),
+    db.reviewSessions.toArray().catch(() => []),
   ]);
-  return { exportedAt: Date.now(), vocabulary, decks };
+  return { exportedAt: Date.now(), vocabulary, decks, drillEvents, reviewSessions };
 }
 
 export function toCsv(items: VocabularyItem[]): string {

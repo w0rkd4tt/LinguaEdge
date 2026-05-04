@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '@/common/db';
 import { getStats } from '@/common/vocab-service';
-import type { StatsResponse } from '@/common/types';
+import type { DrillEvent, StatsResponse } from '@/common/types';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -10,6 +10,14 @@ export function StatsPage() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const sessions = useLiveQuery(() => db.reviewSessions.toArray(), []);
   const items = useLiveQuery(() => db.vocabulary.toArray(), []);
+  const recentDrills = useLiveQuery(
+    () =>
+      db.drillEvents
+        .where('at')
+        .above(Date.now() - 7 * DAY_MS)
+        .toArray(),
+    [],
+  );
 
   useEffect(() => {
     getStats().then(setStats);
@@ -32,6 +40,9 @@ export function StatsPage() {
           accent="text-green-600"
         />
       </div>
+
+      <DrillSummary events={recentDrills ?? []} />
+
 
       <div className="bg-white rounded-xl border border-slate-200 p-4">
         <h3 className="font-semibold mb-3">Phân bố trạng thái</h3>
@@ -65,6 +76,68 @@ export function StatsPage() {
         <h3 className="font-semibold mb-3">Hoạt động 16 tuần gần nhất</h3>
         <Heatmap data={heatmap} />
       </div>
+    </div>
+  );
+}
+
+function DrillSummary({ events }: { events: DrillEvent[] }) {
+  const summary = useMemo(() => {
+    const answered = events.filter((e) => e.outcome === 'answered');
+    const correct = answered.filter((e) => e.correct).length;
+    const skipped = events.filter((e) => e.outcome === 'skipped').length;
+    return {
+      total: events.length,
+      answered: answered.length,
+      correct,
+      skipped,
+      accuracy: answered.length ? (correct / answered.length) * 100 : 0,
+    };
+  }, [events]);
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h3 className="font-semibold">Drill 7 ngày qua</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Popup học nhanh tự bật khi đọc web (mỗi 10 phút trên 1 tab).
+          </p>
+        </div>
+        <a
+          href="#drill"
+          className="text-sm text-brand-600 hover:underline"
+        >
+          Xem chi tiết →
+        </a>
+      </div>
+      {summary.total === 0 ? (
+        <p className="text-sm text-slate-400">
+          Chưa có drill nào trong tuần. Đảm bảo Drill được bật trong Settings.
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Mini label="Tổng drill" value={summary.total} />
+          <Mini label="Đã trả lời" value={summary.answered} />
+          <Mini
+            label="Accuracy"
+            value={`${summary.accuracy.toFixed(0)}%`}
+            accent={
+              summary.accuracy >= 70 ? 'text-green-600' :
+              summary.accuracy >= 50 ? 'text-amber-600' : 'text-red-600'
+            }
+          />
+          <Mini label="Bỏ qua" value={summary.skipped} accent="text-slate-500" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Mini(props: { label: string; value: string | number; accent?: string }) {
+  return (
+    <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+      <div className={`text-lg font-semibold ${props.accent ?? ''}`}>{props.value}</div>
+      <div className="text-xs text-slate-500 mt-0.5">{props.label}</div>
     </div>
   );
 }

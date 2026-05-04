@@ -77,14 +77,24 @@ export function Popup() {
 
       <div className="space-y-2 mb-3">
         <Toggle
+          label="Tô màu từ đã lưu trên web"
+          checked={settings?.highlightEnabled ?? true}
+          onChange={(v) => update('highlightEnabled', v)}
+        />
+        <Toggle
+          label="Re-encounter mini quiz"
+          checked={settings?.reencounterEnabled ?? true}
+          onChange={(v) => update('reencounterEnabled', v)}
+        />
+        <Toggle
+          label="Drill khi đọc web"
+          checked={settings?.drillEnabled ?? true}
+          onChange={(v) => update('drillEnabled', v)}
+        />
+        <Toggle
           label="Tự động auto-deck theo trang"
           checked={settings?.autoDeckEnabled ?? true}
           onChange={(v) => update('autoDeckEnabled', v)}
-        />
-        <Toggle
-          label="Nhắc ôn tập"
-          checked={settings?.notificationsEnabled ?? true}
-          onChange={(v) => update('notificationsEnabled', v)}
         />
       </div>
 

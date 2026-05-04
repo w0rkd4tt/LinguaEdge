@@ -54,10 +54,21 @@ export function SettingsPage() {
       if (!Array.isArray(data.vocabulary)) {
         throw new Error('File JSON không hợp lệ');
       }
-      await db.transaction('rw', db.vocabulary, db.decks, async () => {
-        if (Array.isArray(data.decks)) await db.decks.bulkPut(data.decks);
-        await db.vocabulary.bulkPut(data.vocabulary);
-      });
+      await db.transaction(
+        'rw',
+        db.vocabulary,
+        db.decks,
+        db.drillEvents,
+        db.reviewSessions,
+        async () => {
+          if (Array.isArray(data.decks)) await db.decks.bulkPut(data.decks);
+          await db.vocabulary.bulkPut(data.vocabulary);
+          if (Array.isArray(data.drillEvents)) await db.drillEvents.bulkPut(data.drillEvents);
+          if (Array.isArray(data.reviewSessions)) {
+            await db.reviewSessions.bulkPut(data.reviewSessions);
+          }
+        },
+      );
       setMessage(`Đã nhập ${data.vocabulary.length} từ.`);
     } catch (e) {
       setMessage('Lỗi nhập file: ' + (e as Error).message);
@@ -69,11 +80,19 @@ export function SettingsPage() {
   const handleResetAll = async () => {
     if (!confirm('Xóa toàn bộ kho từ vựng? Hành động này không thể hoàn tác.')) return;
     if (!confirm('Bạn chắc chắn chứ?')) return;
-    await db.transaction('rw', db.vocabulary, db.decks, db.reviewSessions, async () => {
-      await db.vocabulary.clear();
-      await db.decks.clear();
-      await db.reviewSessions.clear();
-    });
+    await db.transaction(
+      'rw',
+      db.vocabulary,
+      db.decks,
+      db.reviewSessions,
+      db.drillEvents,
+      async () => {
+        await db.vocabulary.clear();
+        await db.decks.clear();
+        await db.reviewSessions.clear();
+        await db.drillEvents.clear();
+      },
+    );
     setMessage('Đã xóa toàn bộ dữ liệu.');
   };
 
@@ -138,6 +157,51 @@ export function SettingsPage() {
             className="w-24 px-3 py-2 rounded-lg border border-slate-200 text-sm"
           />
         </Field>
+      </Section>
+
+      <Section title="Drill khi đọc web (re-encounter)">
+        <Toggle
+          label="Bật popup học nhanh"
+          desc="Khi bạn đang đọc web, LinguaEdge sẽ hiện 1 popup nhỏ ở góc dưới-phải để học/ôn 1 từ ngẫu nhiên kèm câu ví dụ. Chỉ kích hoạt khi tab đang mở và bạn vừa thao tác trong 30 giây."
+          checked={settings.drillEnabled}
+          onChange={(v) => update('drillEnabled', v)}
+        />
+        <Field label="Mỗi (phút) trên 1 tab">
+          <input
+            type="number" min={2} max={120}
+            value={settings.drillIntervalMinutes}
+            onChange={(e) => update('drillIntervalMinutes', Number(e.target.value))}
+            className="w-24 px-3 py-2 rounded-lg border border-slate-200 text-sm"
+          />
+        </Field>
+        <Field label="Tối đa lần / giờ / tab">
+          <input
+            type="number" min={1} max={20}
+            value={settings.drillMaxPerHour}
+            onChange={(e) => update('drillMaxPerHour', Number(e.target.value))}
+            className="w-24 px-3 py-2 rounded-lg border border-slate-200 text-sm"
+          />
+        </Field>
+        <p className="text-xs text-slate-500">
+          Drill ưu tiên các từ ở trạng thái <strong>Mới</strong> / <strong>Học</strong>. Trả lời
+          đúng → SRS coi như "Tốt" (interval kéo dài); sai → coi như "Quên" (reset interval).
+          Bấm "Bỏ qua" thì không grade.
+        </p>
+      </Section>
+
+      <Section title="Highlight & Re-encounter">
+        <Toggle
+          label="Tô màu các từ đã lưu trên trang web"
+          desc="Vàng = từ Mới · Cam = đang Học · Xanh = đang Ôn. Dùng CSS Custom Highlight API nên không phá DOM gốc."
+          checked={settings.highlightEnabled}
+          onChange={(v) => update('highlightEnabled', v)}
+        />
+        <Toggle
+          label="Re-encounter mini quiz"
+          desc="Khi gặp từ đang Học / Ôn trên trang web, hiện 1 dấu chấm xanh nhỏ — click để làm mini quiz 4 đáp án ngay tại chỗ. Tối đa 6 dot/page, cooldown 30 phút mỗi từ."
+          checked={settings.reencounterEnabled}
+          onChange={(v) => update('reencounterEnabled', v)}
+        />
       </Section>
 
       <Section title="Tổ chức">
